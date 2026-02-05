@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ship Positions</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <style>
+        body { margin: 0; padding: 0; font-family: sans-serif; }
+        #map { height: 100vh; width: 100vw; }
+        #controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: white;
+            padding: 15px;
+            z-index: 1000;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            min-width: 200px;
+        }
+        h3 { margin-top: 0; margin-bottom: 10px; font-size: 16px; }
+        .status-line { margin-bottom: 5px; font-size: 14px; }
+        .error { color: #d32f2f; font-weight: bold; }
+        select, button { width: 100%; padding: 8px; margin-bottom: 10px; }
+        .loading { color: #1976d2; }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <h3>Live AIS Data</h3>
+        <select id="timeRange">
+            <option value="1">Last 1 Hour</option>
+            <option value="6">Last 6 Hours</option>
+            <option value="24" selected>Last 24 Hours</option>
+            <option value="168">Last 7 Days</option>
+        </select>
+        <button onclick="updateMap()">Refresh</button>
+        <div id="status" class="status-line">Move map to load data.</div>
+        <div id="last-update" class="status-line" style="color: #666; font-size: 12px;"></div>
+    </div>
+    <div id="map"></div>
+
+    <script>
+        const map = L.map('map').setView([50, 10], 5);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        const ships = {}; // Store ship layer groups by ID
+        let isUpdating = false;
+
+        function createShipIcon(heading) {
+            return L.divIcon({
+                className: 'ship-icon',
+                html: `
+                    <div style="
+                        transform: rotate(${heading}deg);
+                        width: 20px;
+                        height: 20px;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                    ">
+                        <svg width="20" height="20" viewBox="0 0 20 20">
+                            <polygon points="10,0 20,20 0,20" style="fill:blue;stroke:white;stroke-width:1" />
+                        </svg>
+                    </div>
+                `,
+                iconSize: [20, 20],
+                iconAnchor: [10, 10]
+            });
+        }
+
+        function updateMap() {
+            if (isUpdating) return;
+            isUpdating = true;
+
+            const hours = document.getElementById('timeRange').value;
+            const bounds = map.getBounds();
+            const boundsStr = `${bounds.getSouthWest().lat},${bounds.getSouthWest().lng},${bounds.getNorthEast().lat},${bounds.getNorthEast().lng}`;
+
+            document.getElementById('status').innerHTML = '<span class="loading">Updating...</span>';
+
+            fetch(`/api/positions?hours=${hours}&bounds=${boundsStr}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.error) {
+                        document.getElementById('status').innerHTML = `<span class="error">Error: ${data.error}</span>`;
+                        return;
+                    }
+
+                    document.getElementById('status').innerText = `Tracking ${data.length} ships`;
+                    document.getElementById('last-update').innerText = `Updated: ${new Date().toLocaleTimeString()}`;
+
+                    const currentShipIds = new Set(data.map(s => s.id));
+                    for (const shipId in ships) {
+                        if (!currentShipIds.has(parseInt(shipId))) {
+                            map.removeLayer(ships[shipId]);
+                            delete ships[shipId];
+                        }
+                    }
+
+                    data.forEach(ship => {
+                        const latLng = [ship.lat, ship.lon];
+                        const popupContent = `<a href="/route/${ship.id}" target="_blank">Ship ${ship.id}</a><br>Last seen: ${ship.ts}<br>Heading: ${Math.round(ship.heading)}°`;
+
+                        if (ships[ship.id]) {
+                            // Update existing ship
+                            const group = ships[ship.id];
+                            const marker = group.getLayers()[0];
+                            const trail = group.getLayers()[1];
+
+                            marker.setLatLng(latLng);
+                            marker.setIcon(createShipIcon(ship.heading));
+                            marker.setPopupContent(popupContent);
+                            trail.setLatLngs(ship.trail);
+                        } else {
+                            // Create new ship (marker + trail)
+                            const marker = L.marker(latLng, {
+                                icon: createShipIcon(ship.heading)
+                            });
+                            marker.bindPopup(popupContent);
+
+                            const trail = L.polyline(ship.trail, {color: 'blue', weight: 2, opacity: 0.7});
+
+                            const group = L.layerGroup([marker, trail]);
+                            group.addTo(map);
+                            ships[ship.id] = group;
+                        }
+                    });
+                })
+                .catch(err => {
+                    console.error('Error fetching data:', err);
+                    document.getElementById('status').innerHTML = `<span class="error">Connection Error. Check console.</span>`;
+                })
+                .finally(() => {
+                    isUpdating = false;
+                });
+        }
+
+        map.on('moveend', updateMap);
+        updateMap();
+    </script>
+</body>
+</html>
