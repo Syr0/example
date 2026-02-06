@@ -30,3 +30,8 @@ Thumbs.db
 # Environment files
 .env
 .env.*
+python/ais_data.db-wal
+python/ais_data.db-shm
+python/ais_data.db
+python/ais_data.db-wal
+python/database.py
